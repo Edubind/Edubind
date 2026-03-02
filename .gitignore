@@ -1,0 +1,25 @@
+# Java build artifacts
+edubind-serv/target/
+
+# Python caches
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+.pytest_cache/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Firmware artifacts (compiled binaries)
+firmware/**/*.hex
+firmware/**/*.bin
+firmware/**/*.elf
+
+# Provisioning station firmware artifacts download cache
+provisioning-station/firmware-artifacts/
