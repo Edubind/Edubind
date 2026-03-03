@@ -36,20 +36,10 @@ End-to-end provisioning solution for Arduino R4 WiFi and ESP32 devices.
 | Desktop provisioning app | `provisioning-station/` | Python 3.9+ |
 | Backend API | `edubind-serv/` | Java 17 / Spring Boot 3 |
 | Arduino R4 WiFi firmware | `firmware/arduino_r4_wifi/` | C/C++ (Arduino) |
-| ESP32 firmware | `firmware/esp32/` | C/C++ (Arduino) |
 
 ## Quick start
 
-### 1. Start the backend
-
-```bash
-cd edubind-serv
-./mvnw spring-boot:run
-# API available at http://localhost:8080
-# H2 console at http://localhost:8080/h2-console
-```
-
-### 2. Run the provisioning station
+### 1. Run the provisioning station
 
 ```bash
 cd provisioning-station
@@ -57,7 +47,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-### 3. Flash firmware
+### 2. Flash firmware
 
 Install [arduino-cli](https://arduino.github.io/arduino-cli/) then see
 `firmware/README.md` for per-board build instructions.
@@ -76,33 +66,3 @@ Install [arduino-cli](https://arduino.github.io/arduino-cli/) then see
    - Flash it via `arduino-cli`
    - Inject the WiFi/endpoint config over serial
    - Report the result (SUCCESS/FAILED) to the backend
-
-## API endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/devices` | Register a device |
-| `GET` | `/api/devices` | List all devices |
-| `GET` | `/api/devices/{id}/config` | Get device config blob |
-| `PUT` | `/api/devices/{id}/profile/{profileId}` | Assign a profile |
-| `POST` | `/api/profiles` | Create a device profile |
-| `GET` | `/api/profiles` | List profiles |
-| `POST` | `/api/firmwares` | Register a firmware version |
-| `GET` | `/api/firmwares?board=ESP32` | List firmwares by board |
-| `GET` | `/api/firmwares/{id}/download` | Download firmware artifact |
-| `POST` | `/api/provisioning/jobs` | Start a provisioning job |
-| `GET` | `/api/provisioning/jobs` | List all jobs |
-| `POST` | `/api/provisioning/jobs/{id}/report` | Report job result |
-
-## Running tests
-
-```bash
-# Backend (Java)
-cd edubind-serv
-./mvnw test
-
-# Provisioning station (Python)
-cd provisioning-station
-pip install -r requirements.txt pytest
-pytest tests/
-```
