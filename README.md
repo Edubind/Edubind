@@ -47,19 +47,39 @@ pip install -r requirements.txt
 python main.py
 ```
 
-### 2. Flash firmware
+On first run, you will be prompted to login with your credentials. The application will:
+- Store your backend URL and JWT token securely in `~/.edubind/provisioning.json`
+- Auto-connect on restart using the stored token
+- Warn you when tokens are expiring soon
+
+### 2. Configuration & Authentication
+
+**Features (as of v2.0):**
+- JWT Bearer authentication with the backend
+- Persistent settings (Backend URL, operator name, auth tokens)
+- Local audit logging in `~/.edubind/audit.log` (CSV export available)
+- Automatic token refresh on 401 errors
+- Built-in token expiry monitoring
+
+**New modules:**
+- `station/config_manager.py` – Persistent configuration storage
+- `station/auth_manager.py` – JWT login and token management  
+- `station/audit_logger.py` – Local audit trail for provisioning jobs
+
+### 3. Flash firmware
 
 Install [arduino-cli](https://arduino.github.io/arduino-cli/) then see
 `firmware/README.md` for per-board build instructions.
 
 ## Provisioning workflow
 
-1. **Connect** the provisioning station to the backend (enter URL + operator name)
-2. **Plug in** an Arduino R4 WiFi or ESP32 via USB
-3. **Refresh ports** – the board is detected automatically
-4. **Select firmware** from the catalogue
-5. **Enter Device ID** (e.g. `ESP32-SCHOOL-A-001`)
-6. **Click "Start Provisioning"** – the station will:
+1. **Login** with your Edubind credentials (first run only)
+2. **Connect** to the backend – automatic with stored token
+3. **Plug in** an Arduino R4 WiFi or ESP32 via USB
+4. **Refresh ports** – the board is detected automatically
+5. **Select firmware** from the catalogue
+6. **Enter Device ID** (e.g. `ESP32-SCHOOL-A-001`)
+7. **Click "Start Provisioning"** – the station will:
    - Register the device in the backend
    - Create a provisioning job
    - Download the firmware artifact

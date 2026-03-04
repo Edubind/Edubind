@@ -23,6 +23,7 @@ except ImportError:
 _BOARD_IDENTIFIERS: dict[tuple[int, int], str] = {
     (0x2341, 0x0069): "ARDUINO_R4_WIFI",
     (0x2341, 0x0268): "ARDUINO_R4_WIFI",
+    (0x2341, 0x1002): "ARDUINO_R4_WIFI",   # CMSIS-DAP mode
     (0x10C4, 0xEA60): "ESP32",   # CP2102/CP2104 (common ESP32 devboards)
     (0x1A86, 0x7523): "ESP32",   # CH340 (common ESP32 devboards)
     (0x1A86, 0x55D4): "ESP32",   # CH9102 (newer ESP32 devboards)
