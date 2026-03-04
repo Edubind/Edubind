@@ -249,9 +249,13 @@ def flash_firmware(
         try:
             import serial
             import time
-            s = serial.Serial(port, baudrate=1200, timeout=0.1)
+            # For Arduino R4 WiFi, opening at 1200bps and CLOSING triggers the reset.
+            # We add DTR=True/RTS=True to ensure the signal is physically sent
+            # and wait longer for the USB stack to re-enumerate.
+            s = serial.Serial(port, baudrate=1200, dsrdtr=True, rtscts=True)
+            time.sleep(0.1)
             s.close()
-            time.sleep(1.5)
+            time.sleep(2.5) # Increased from 1.5
         except Exception:
             pass
 
@@ -291,14 +295,23 @@ def flash_firmware(
         for attempt in range(1, 4):
             for p in candidates:
                 logs += f"[cli] Attempt {attempt} on port {p}\n"
-                cmd = [
-                    arduino_cli_path,
-                    "upload",
-                    "--port", p,
-                    "--fqbn", fqbn,
-                    "--input-file", upload_path,
-                    "--verify",
-                ]
+                if fqbn.startswith("esp8266:"):
+                    cmd = [
+                        "esptool",
+                        "--port", p,
+                        "write_flash",
+                        "0x0",
+                        upload_path,
+                    ]
+                else:
+                    cmd = [
+                        arduino_cli_path,
+                        "upload",
+                        "--port", p,
+                        "--fqbn", fqbn,
+                        "--input-file", upload_path,
+                        "--verify",
+                    ]
                 cmd.extend(extra_flags)
 
                 try:
@@ -319,6 +332,14 @@ def flash_firmware(
                         sha256=artifact_sha256,
                     )
                 except FileNotFoundError:
+                    if fqbn.startswith("esp8266:"):
+                        return FlashResult(
+                            success=False,
+                            logs=logs + "esptool not found on PATH. Install it (e.g. pip install esptool) "
+                                 "or ensure Arduino ESP8266 tools are available.",
+                            return_code=-7,
+                            sha256=artifact_sha256,
+                        )
                     return FlashResult(
                         success=False,
                         logs=logs + f"arduino-cli not found at: {arduino_cli_path}. "

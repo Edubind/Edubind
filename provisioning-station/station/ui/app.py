@@ -364,6 +364,35 @@ class ProvisioningApp(tk.Tk):
         
         ttk.Button(dev_frame, text="Delete Selected", command=self._delete_device).pack(pady=2)
 
+        # OTA Management
+        ota_frame = ttk.LabelFrame(tab, text="OTA Updates", padding=8)
+        ota_frame.pack(fill=tk.X, padx=4, pady=4)
+        
+        row_ota = ttk.Frame(ota_frame)
+        row_ota.pack(fill=tk.X, pady=2)
+        ttk.Button(row_ota, text="Refresh Devices", command=self._refresh_ota_device_list).pack(side=tk.LEFT, padx=2)
+        
+        ttk.Label(row_ota, text="Firmware Version:").pack(side=tk.LEFT, padx=4)
+        self._ota_fw_var = tk.StringVar()
+        fw_combo = ttk.Combobox(row_ota, textvariable=self._ota_fw_var, state="readonly", width=20)
+        fw_combo.pack(side=tk.LEFT, padx=2)
+        self._ota_fw_combo = fw_combo
+        
+        ttk.Button(row_ota, text="Update Selected", command=self._trigger_ota_update).pack(side=tk.LEFT, padx=2)
+        
+        ttk.Label(ota_frame, text="Devices for OTA Update:").pack(anchor="w", padx=4)
+        self._ota_dev_tree = ttk.Treeview(ota_frame, columns=("id", "mac", "current_version"), show="headings", height=5)
+        self._ota_dev_tree.heading("id", text="Device ID")
+        self._ota_dev_tree.heading("mac", text="MAC Address")
+        self._ota_dev_tree.heading("current_version", text="Current Version")
+        self._ota_dev_tree.column("id", width=80)
+        self._ota_dev_tree.column("mac", width=150)
+        self._ota_dev_tree.column("current_version", width=100)
+        ota_scrollbar = ttk.Scrollbar(ota_frame, orient=tk.VERTICAL, command=self._ota_dev_tree.yview)
+        self._ota_dev_tree.configure(yscrollcommand=ota_scrollbar.set)
+        self._ota_dev_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=2)
+        ota_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
     # ------------------------------------------------------------------ #
     # Actions                                                              #
     # ------------------------------------------------------------------ #
@@ -814,7 +843,10 @@ class ProvisioningApp(tk.Tk):
                 self._log("→ Step 1/5: Uploading provisioning helper sketch…")
                 self.after(0, lambda: self._show_busy_popup(
                     "Uploading provisioning helper sketch…\nPlease wait."))
-                self._flash_helper_sketch(detected.port, detected.board_model, detected.fqbn)
+                resolved_fqbn = self._flash_helper_sketch(
+                    detected.port, detected.board_model, detected.fqbn)
+                if resolved_fqbn:
+                    detected.fqbn = resolved_fqbn
                 logs.append("Provisioning helper sketch uploaded.")
                 self._log("  ✓ Helper sketch uploaded.")
 
@@ -1200,6 +1232,86 @@ class ProvisioningApp(tk.Tk):
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to delete device: {e}")
 
+    def _refresh_ota_device_list(self) -> None:
+        """Load devices and their current firmware versions for OTA updates."""
+        if self._client is None:
+            messagebox.showerror("Error", "Not connected to backend.")
+            return
+        
+        def _load():
+            try:
+                devices = self._client.list_devices()
+                for row in self._ota_dev_tree.get_children():
+                    self._ota_dev_tree.delete(row)
+                
+                for device in devices:
+                    device_id = device.get("id")
+                    try:
+                        version_info = self._client.get_device_version(device_id)
+                        current_version = version_info.get("version", "Unknown")
+                    except Exception:
+                        current_version = "Unknown"
+                    
+                    self._ota_dev_tree.insert("", tk.END, values=(
+                        device_id,
+                        device.get("macAddress"),
+                        current_version
+                    ))
+                
+                # Update firmware combo
+                try:
+                    firmwares = self._client.list_firmwares()
+                    versions = [fw.get("version") for fw in firmwares]
+                    self._ota_fw_combo['values'] = versions
+                    if versions:
+                        self._ota_fw_var.set(versions[0])
+                except Exception:
+                    pass
+                
+                self._log("OTA device list refreshed.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load OTA devices: {e}")
+        
+        # Run in background thread
+        threading.Thread(target=_load, daemon=True).start()
+
+    def _trigger_ota_update(self) -> None:
+        """Trigger OTA update for selected devices."""
+        if self._client is None:
+            messagebox.showerror("Error", "Not connected to backend.")
+            return
+        
+        selection = self._ota_dev_tree.selection()
+        if not selection:
+            messagebox.showerror("Error", "Please select at least one device to update.")
+            return
+        
+        version = self._ota_fw_var.get()
+        if not version:
+            messagebox.showerror("Error", "Please select a firmware version.")
+            return
+        
+        device_ids = []
+        for item_id in selection:
+            values = self._ota_dev_tree.item(item_id, "values")
+            device_id = int(values[0])
+            device_ids.append(device_id)
+        
+        if messagebox.askyesno("Confirm OTA Update", 
+                               f"Update {len(device_ids)} device(s) to version {version}?"):
+            def _update():
+                try:
+                    self._log(f"Triggering OTA update for {len(device_ids)} device(s) to version {version}...")
+                    result = self._client.trigger_ota_update(device_ids, version)
+                    self._log(f"OTA update triggered: {result}")
+                    messagebox.showinfo("Success", f"OTA update triggered for {len(device_ids)} device(s).")
+                    self._refresh_ota_device_list()
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to trigger OTA update: {e}")
+            
+            # Run in background thread
+            threading.Thread(target=_update, daemon=True).start()
+
     # ------------------------------------------------------------------ #
     # Helpers                                                              #
     # ------------------------------------------------------------------ #
@@ -1283,7 +1395,7 @@ class ProvisioningApp(tk.Tk):
     # Provisioning helper methods (called from worker thread)              #
     # ------------------------------------------------------------------ #
 
-    def _flash_helper_sketch(self, port: str, board_model: str, fqbn: str) -> None:
+    def _flash_helper_sketch(self, port: str, board_model: str, fqbn: str) -> str:
         """
         Compile and upload the provisioning helper sketch.
 
@@ -1308,6 +1420,83 @@ class ProvisioningApp(tk.Tk):
                 raise RuntimeError(f"Could not install arduino-cli: {msg}")
             self._log(f"  ✓ {msg}")
 
+        # If the detector reported a generic ESP, try to figure out whether
+        # it's actually an ESP8266 or ESP32 by asking arduino-cli.  This
+        # handles devices where the USB VID/PID doesn't distinguish the chip.
+        if board_model == "GENERIC_ESP":
+            try:
+                from station.device_detector import detect_board_via_arduino_cli
+                cli_fqbn = detect_board_via_arduino_cli(port)
+                if cli_fqbn:
+                    fqbn = cli_fqbn
+                    if "esp8266" in cli_fqbn.lower():
+                        board_model = "ESP8266"
+                    elif "esp32" in cli_fqbn.lower():
+                        board_model = "ESP32"
+                    self._log(f"  ✓ Detected board via arduino-cli: {board_model} ({fqbn})")
+            except Exception:
+                pass
+
+        # Ensure board core is installed
+        # Extract package:architecture from FQBN (e.g., "esp32:esp32" from "esp32:esp32:esp32")
+        fqbn_parts = fqbn.split(":")
+        if len(fqbn_parts) >= 2:
+            platform_id = f"{fqbn_parts[0]}:{fqbn_parts[1]}"
+            self._log(f"  → Checking platform: {platform_id}…")
+            try:
+                # refresh the core index first so we have the latest list
+                self._log("  → Updating Arduino core index…")
+                subprocess.run(["arduino-cli", "core", "update-index"],
+                               capture_output=True, text=True, timeout=60)
+
+                # Check if platform is already installed
+                list_result = subprocess.run(
+                    ["arduino-cli", "core", "list"],
+                    capture_output=True, text=True, timeout=30)
+                
+                if list_result.returncode == 0 and platform_id not in list_result.stdout:
+                    # Platform not installed, auto-install it
+                    self._log(f"  → Installing platform {platform_id}…")
+                    install_result = subprocess.run(
+                        ["arduino-cli", "core", "install", platform_id],
+                        capture_output=True, text=True, timeout=300)
+                    
+                    if install_result.returncode != 0:
+                        # give more helpful message if platform not found
+                        stderr = install_result.stderr.lower()
+                        if "not found" in stderr or "not in" in stderr:
+                            # attempt automatic addition of common third‑party URLs
+                            if platform_id.startswith("esp8266"):
+                                self._log("  → Adding ESP8266 board URL and updating index…")
+                                subprocess.run([
+                                    "arduino-cli", "core", "update-index",
+                                    "--additional-urls",
+                                    "http://arduino.esp8266.com/stable/package_esp8266com_index.json"
+                                ], capture_output=True, text=True, timeout=60)
+                                # retry install once
+                                retry = subprocess.run(
+                                    ["arduino-cli", "core", "install", platform_id],
+                                    capture_output=True, text=True, timeout=300)
+                                if retry.returncode == 0:
+                                    self._log(f"  ✓ Platform {platform_id} installed on retry.")
+                                    install_result = retry
+                                    stderr = retry.stderr.lower()
+                                # fall through to error handling if retry also failed
+                            if "not found" in stderr or "not in" in stderr:
+                                raise RuntimeError(
+                                    f"Platform {platform_id} not found. "
+                                    "Try running 'arduino-cli core update-index' or "
+                                    "ensure the appropriate additional URLs are configured.\n"
+                                    f"{install_result.stdout + install_result.stderr}")
+                        else:
+                            raise RuntimeError(
+                                f"Failed to install platform {platform_id}:\n{install_result.stdout + install_result.stderr}")
+                    self._log(f"  ✓ Platform {platform_id} installed.")
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(f"Timeout while installing platform {platform_id}")
+            except Exception as e:
+                self._log(f"  ⚠ Warning: Could not auto-install platform: {e}")
+
         # Compile
         self._log("  → Compiling helper sketch…")
         compile_result = subprocess.run(
@@ -1321,44 +1510,89 @@ class ProvisioningApp(tk.Tk):
         self._log("  → Resetting board into bootloader mode…")
         try:
             import serial as _serial
-            _p = _serial.Serial()
-            _p.port = port
-            _p.baudrate = 1200
-            _p.open()
+            _p = _serial.Serial(port, baudrate=1200, dsrdtr=True, rtscts=True)
+            _time.sleep(0.1)
             _p.close()
-            _time.sleep(2.5)
+            _time.sleep(3.5) # Increased from 2.5
         except Exception:
             pass
 
-        # Upload with retry across candidate ports
+        def _attempt_upload(fqbn_to_use: str) -> tuple[bool, str]:
+            """Try uploading the sketch with *fqbn_to_use*; return (success, output)."""
+            tried_ports: set[str] = set()
+            last_err = ""
+            for attempt in range(1, 7):
+                candidates = [port]
+                if port.startswith("/dev/cu."):
+                    candidates.append(port.replace("/dev/cu.", "/dev/tty.", 1))
+                # Also re-scan for ports with same board_model (could shift)
+                try:
+                    for dev in list_ports():
+                        if dev.board_model == board_model and dev.port not in candidates:
+                            candidates.append(dev.port)
+                except Exception:
+                    pass
+
+                for cand in candidates:
+                    if cand in tried_ports:
+                        continue
+                    tried_ports.add(cand)
+                    result = subprocess.run(
+                        ["arduino-cli", "upload", "--port", cand, "--fqbn", fqbn_to_use, sketch_dir],
+                        capture_output=True, text=True, timeout=120)
+                    last_err = result.stdout + result.stderr
+                    if result.returncode == 0:
+                        return True, last_err
+                _time.sleep(1.0)
+            return False, last_err
+
         self._log("  → Uploading…")
-        tried: set[str] = set()
-        last_error = ""
-        for attempt in range(1, 7):
-            candidates = [port]
-            if port.startswith("/dev/cu."):
-                candidates.append(port.replace("/dev/cu.", "/dev/tty.", 1))
-            # Also try re-detected ports for same board model
+        success, upload_err = _attempt_upload(fqbn)
+        if success:
+            return fqbn
+
+        # if the upload failed and the error suggests wrong chip, try esp8266
+        if "ESP8266" in upload_err and "ESP32" in upload_err or "wrong chip" in upload_err.lower():
+            self._log("  ⚠ Detected chip mismatch, retrying with ESP8266 core…")
+            alt_fqbn = "esp8266:esp8266:generic"
             try:
-                for dev in list_ports():
-                    if dev.board_model == board_model and dev.port not in candidates:
-                        candidates.append(dev.port)
-            except Exception:
-                pass
-
-            for cand in candidates:
-                if cand in tried:
-                    continue
-                tried.add(cand)
-                result = subprocess.run(
-                    ["arduino-cli", "upload", "--port", cand, "--fqbn", fqbn, sketch_dir],
+                # ensure the alternate core is installed
+                pf = alt_fqbn.split(":")
+                if len(pf) >= 2:
+                    alt_platform = f"{pf[0]}:{pf[1]}"
+                    self._log(f"  → Checking platform: {alt_platform}…")
+                    esp8266_url = "http://arduino.esp8266.com/stable/package_esp8266com_index.json"
+                    self._log("  → Updating Arduino core index for ESP8266…")
+                    subprocess.run(
+                        ["arduino-cli", "core", "update-index", "--additional-urls", esp8266_url],
+                        capture_output=True, text=True, timeout=60)
+                    list_result = subprocess.run(
+                        ["arduino-cli", "core", "list", "--additional-urls", esp8266_url],
+                        capture_output=True, text=True, timeout=30)
+                    if alt_platform not in list_result.stdout:
+                        self._log(f"  → Installing platform {alt_platform}…")
+                        inst_res = subprocess.run(
+                            ["arduino-cli", "core", "install", alt_platform, "--additional-urls", esp8266_url],
+                            capture_output=True, text=True, timeout=300)
+                        if inst_res.returncode != 0:
+                            self._log(f"  ⚠ Failed to install platform {alt_platform}, error:\n{inst_res.stdout+inst_res.stderr}")
+                self._log("  → Re-compiling helper sketch for ESP8266…")
+                compile_result = subprocess.run(
+                    ["arduino-cli", "compile", "--fqbn", alt_fqbn, sketch_dir],
                     capture_output=True, text=True, timeout=120)
-                last_error = result.stdout + result.stderr
-                if result.returncode == 0:
-                    return  # success
-            _time.sleep(1.0)
+                if compile_result.returncode != 0:
+                    raise RuntimeError(
+                        f"Compile failed (ESP8266):\n{compile_result.stdout + compile_result.stderr}")
 
-        raise RuntimeError(f"Upload of helper sketch failed after retries:\n{last_error}")
+                # try upload again
+                success2, upload_err2 = _attempt_upload(alt_fqbn)
+                if success2:
+                    return alt_fqbn
+                upload_err = upload_err2
+            except Exception as e:
+                upload_err += f"\n[retry error] {e}"
+
+        raise RuntimeError(f"Upload of helper sketch failed after retries:\n{upload_err}")
 
     @staticmethod
     def _read_mac_blocking(port: str, timeout: float = 10.0) -> Optional[str]:

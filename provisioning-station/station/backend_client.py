@@ -124,6 +124,22 @@ class BackendClient:
         resp.raise_for_status()
         return resp.json()
 
+    def get_device_version(self, device_id: int) -> dict[str, Any]:
+        """Get the current firmware version of a device."""
+        resp = self._make_request("GET", f"/api/ota/{device_id}/version")
+        resp.raise_for_status()
+        return resp.json()
+
+    def trigger_ota_update(self, device_ids: list[int], version: str) -> dict[str, Any]:
+        """Trigger OTA update on one or more devices."""
+        params = {
+            "deviceIds": device_ids,
+            "version": version
+        }
+        resp = self._make_request("POST", "/api/ota/update", params=params)
+        resp.raise_for_status()
+        return resp.json()
+
     # ------------------------------------------------------------------ #
     # Rooms                                                                #
     # ------------------------------------------------------------------ #

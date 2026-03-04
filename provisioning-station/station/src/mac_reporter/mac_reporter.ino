@@ -15,7 +15,8 @@
  *
  * Supported boards:
  *  - Arduino R4 WiFi  (ARDUINO_ARCH_RENESAS)
- *  - ESP32 / ESP32-S3
+ *  - ESP32 / ESP32-S3 (ESP32 / ESP32_S3)
+ *  - ESP8266           (ESP8266)
  */
 
 // ── Config blob constants (must match config_injector.py / eeprom_store.h) ──
@@ -53,6 +54,8 @@ static bool storeConfigBlob(const uint8_t* blob) {
 #elif defined(ESP32) || defined(ESP32_S3)
   #include <WiFi.h>
   #include <esp_mac.h>
+#elif defined(ESP8266)
+  #include <ESP8266WiFi.h>
 #endif
 
 static void printMACAddress() {
@@ -61,6 +64,8 @@ static void printMACAddress() {
   WiFi.macAddress(mac);
 #elif defined(ESP32) || defined(ESP32_S3)
   esp_read_mac(mac, ESP_MAC_WIFI_STA);
+#elif defined(ESP8266)
+  WiFi.macAddress(mac);
 #else
   memset(mac, 0, 6);
 #endif
