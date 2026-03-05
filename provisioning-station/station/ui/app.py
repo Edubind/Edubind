@@ -49,7 +49,7 @@ class ProvisioningApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Edubind Provisioning Station")
-        self.geometry("900x600")
+        self.geometry("1080x720")
         self.resizable(True, True)
 
         # Initialize configuration management
@@ -61,13 +61,15 @@ class ProvisioningApp(tk.Tk):
         self._detected_ports: list[DetectedDevice] = []
         self._firmwares: list[dict] = []
         self._current_job_id: Optional[str] = None
+        self._room_id_by_label: dict[str, int] = {}
+        self._room_name_by_id: dict[int, str] = {}
 
         # Check if we need to login first
         if not self.auth_mgr.is_authenticated():
             self._show_login_window()
         else:
             self._build_ui()
-            self._auto_connect_backend()
+            self.after(50, self._auto_connect_backend)
 
     # ------------------------------------------------------------------ #
     # UI construction                                                      #
@@ -77,7 +79,7 @@ class ProvisioningApp(tk.Tk):
         """Display login dialog before showing main UI."""
         login_window = tk.Toplevel(self)
         login_window.title("Edubind Login")
-        login_window.geometry("350x200")
+        login_window.geometry("520x300")
         login_window.transient(self)
         login_window.grab_set()
 
@@ -114,7 +116,7 @@ class ProvisioningApp(tk.Tk):
             if success:
                 login_window.destroy()
                 self._build_ui()
-                self._auto_connect_backend()
+                self.after(50, self._auto_connect_backend)
             else:
                 status_var.set(message)
 
@@ -122,30 +124,40 @@ class ProvisioningApp(tk.Tk):
 
     def _auto_connect_backend(self) -> None:
         """Automatically connect to backend with stored token."""
-        try:
-            url = self.config_mgr.get_backend_url()
-            self._client = BackendClient(url, auth_manager=self.auth_mgr)
-            # Test connection by listing devices
-            devices = self._client.list_devices()
-            self._status_var.set("✓ Connected")
-            self._start_btn.config(state="normal")
-            self._log("Connected to backend: " + url)
-            
-            # Refresh ports and firmwares in background to avoid blocking UI
-            self.after(100, self._refresh_ports)
-            self.after(200, self._refresh_firmwares)
-            self.after(300, self._refresh_room_list)
-            self.after(400, self._refresh_firmware_list)
-            self.after(500, self._refresh_device_list)
-            
-            # Check if token expiring soon
-            if self.auth_mgr.is_token_expiring_soon():
-                remaining = self.config_mgr.get_token_expiry_remaining_seconds()
-                self._log(f"⚠ Token expiring in {remaining} seconds. Login again to refresh.")
-        except Exception as e:
-            self._status_var.set("✗ Connection failed")
-            self._log(f"Backend connection error: {e}")
-            self._start_btn.config(state="disabled")
+        self._show_busy_popup("Connecting to backend…")
+
+        def _run() -> None:
+            try:
+                url = self.config_mgr.get_backend_url()
+                client = BackendClient(url, auth_manager=self.auth_mgr)
+                # Test connection by listing devices.
+                client.list_devices()
+
+                self.after(0, lambda: setattr(self, "_client", client))
+                self.after(0, lambda: self._status_var.set("✓ Connected"))
+                self.after(0, lambda: self._start_btn.config(state="normal"))
+                self.after(0, lambda: self._log("Connected to backend: " + url))
+
+                # Refresh data without blocking initial render.
+                self.after(100, self._refresh_ports)
+                self.after(200, self._refresh_firmwares)
+                self.after(300, self._refresh_room_list)
+                self.after(400, self._refresh_firmware_list)
+                self.after(500, self._refresh_device_list)
+
+                if self.auth_mgr.is_token_expiring_soon():
+                    remaining = self.config_mgr.get_token_expiry_remaining_seconds()
+                    self.after(0, lambda: self._log(
+                        f"⚠ Token expiring in {remaining} seconds. Login again to refresh."))
+            except Exception as e:
+                err_msg = str(e)
+                self.after(0, lambda: self._status_var.set("✗ Connection failed"))
+                self.after(0, lambda msg=err_msg: self._log(f"Backend connection error: {msg}"))
+                self.after(0, lambda: self._start_btn.config(state="disabled"))
+            finally:
+                self.after(0, self._hide_busy_popup)
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _build_ui(self) -> None:
         # ---- Left panel (settings) ----
@@ -235,9 +247,17 @@ class ProvisioningApp(tk.Tk):
         # Row: Room ID
         row3 = ttk.Frame(tab)
         row3.pack(fill=tk.X, pady=2)
-        ttk.Label(row3, text="Room ID:", width=14).pack(side=tk.LEFT)
-        self._room_var = tk.StringVar(value="1")
-        ttk.Entry(row3, textvariable=self._room_var, width=28).pack(side=tk.LEFT)
+        ttk.Label(row3, text="Room:", width=14).pack(side=tk.LEFT)
+        self._room_var = tk.StringVar()
+        self._room_combo = ttk.Combobox(
+            row3,
+            textvariable=self._room_var,
+            state="readonly",
+            width=38,
+        )
+        self._room_combo.pack(side=tk.LEFT)
+        ttk.Button(row3, text="Refresh", command=self._refresh_room_list).pack(
+            side=tk.LEFT, padx=4)
 
         # Row: Firmware
         row4 = ttk.Frame(tab)
@@ -287,7 +307,27 @@ class ProvisioningApp(tk.Tk):
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
     def _build_admin_tab(self) -> None:
-        tab = self._admin_tab
+        canvas_holder = ttk.Frame(self._admin_tab)
+        canvas_holder.pack(fill=tk.BOTH, expand=True)
+
+        self._admin_canvas = tk.Canvas(canvas_holder, highlightthickness=0)
+        admin_scrollbar = ttk.Scrollbar(canvas_holder, orient=tk.VERTICAL,
+                                        command=self._admin_canvas.yview)
+        self._admin_canvas.configure(yscrollcommand=admin_scrollbar.set)
+
+        admin_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._admin_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._admin_content = ttk.Frame(self._admin_canvas)
+        self._admin_canvas_window = self._admin_canvas.create_window(
+            (0, 0), window=self._admin_content, anchor="nw")
+
+        self._admin_content.bind("<Configure>", self._on_admin_content_configure)
+        self._admin_canvas.bind("<Configure>", self._on_admin_canvas_configure)
+        self._admin_canvas.bind("<Enter>", self._bind_admin_mousewheel)
+        self._admin_canvas.bind("<Leave>", self._unbind_admin_mousewheel)
+
+        tab = self._admin_content
         
         # Room Management
         room_frame = ttk.LabelFrame(tab, text="Room Management", padding=8)
@@ -348,15 +388,26 @@ class ProvisioningApp(tk.Tk):
         ttk.Button(dev_frame, text="Refresh Devices", command=self._refresh_device_list).pack(side=tk.LEFT, padx=2)
         
         ttk.Label(dev_frame, text="Connected Devices:").pack(anchor="w", padx=4)
-        self._dev_tree = ttk.Treeview(dev_frame, columns=("id", "mac", "room", "status"), show="headings", height=5)
+        self._dev_tree = ttk.Treeview(
+            dev_frame,
+            columns=("id", "mac", "room", "room_name", "firmware", "status", "last_seen"),
+            show="headings",
+            height=7,
+        )
         self._dev_tree.heading("id", text="ID")
         self._dev_tree.heading("mac", text="MAC Address")
-        self._dev_tree.heading("room", text="Room")
+        self._dev_tree.heading("room", text="Room ID")
+        self._dev_tree.heading("room_name", text="Room Name")
+        self._dev_tree.heading("firmware", text="Firmware")
         self._dev_tree.heading("status", text="Status")
-        self._dev_tree.column("id", width=60)
-        self._dev_tree.column("mac", width=150)
-        self._dev_tree.column("room", width=60)
-        self._dev_tree.column("status", width=80)
+        self._dev_tree.heading("last_seen", text="Last Seen")
+        self._dev_tree.column("id", width=60, stretch=False)
+        self._dev_tree.column("mac", width=150, stretch=True)
+        self._dev_tree.column("room", width=60, stretch=False)
+        self._dev_tree.column("room_name", width=130, stretch=True)
+        self._dev_tree.column("firmware", width=90, stretch=False)
+        self._dev_tree.column("status", width=90, stretch=False)
+        self._dev_tree.column("last_seen", width=140, stretch=True)
         dev_scrollbar = ttk.Scrollbar(dev_frame, orient=tk.VERTICAL, command=self._dev_tree.yview)
         self._dev_tree.configure(yscrollcommand=dev_scrollbar.set)
         self._dev_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=2)
@@ -420,6 +471,9 @@ class ProvisioningApp(tk.Tk):
             self._log("Connected to backend: " + url)
             self._refresh_ports()
             self._refresh_firmwares()
+            self._refresh_room_list()
+            self._refresh_firmware_list()
+            self._refresh_device_list()
         except Exception as e:
             self._status_var.set("✗ Connection failed")
             self._log(f"Backend connection error: {e}")
@@ -674,12 +728,14 @@ class ProvisioningApp(tk.Tk):
                                     or (serial_number and serial_number in address)
                                     or (hardware_id and hardware_id in address)
                                 )
-                        if is_usb_serial and (fqbn_match or token_match):
-                                    # Prefer /dev/cu.* on macOS for uploading to Arduino R4
-                                    if address.startswith("/dev/tty."):
-                                        cu_address = address.replace("/dev/tty.", "/dev/cu.", 1)
-                                        _add_candidate(cu_address)
-                                    _add_candidate(address)
+                                if not (is_usb_serial and (fqbn_match or token_match)):
+                                    continue
+
+                                # Prefer /dev/cu.* on macOS for uploading.
+                                if address.startswith("/dev/tty."):
+                                    cu_address = address.replace("/dev/tty.", "/dev/cu.", 1)
+                                    _add_candidate(cu_address)
+                                _add_candidate(address)
                     except Exception:
                         pass
 
@@ -777,7 +833,7 @@ class ProvisioningApp(tk.Tk):
 
         port_idx = self._port_combo.current()
         fw_idx = self._firmware_combo.current()
-        room_id_str = self._room_var.get().strip()
+        room_id = self._room_id_by_label.get(self._room_var.get().strip())
         operator = self._operator_var.get().strip()
         
         wifi_ssid = self._wifi_ssid_var.get().strip()
@@ -789,8 +845,8 @@ class ProvisioningApp(tk.Tk):
         if fw_idx < 0:
             messagebox.showerror("Error", "No firmware selected.")
             return
-        if not room_id_str.isdigit():
-            messagebox.showerror("Error", "Room ID must be a number.")
+        if room_id is None:
+            messagebox.showerror("Error", "Please select a room from the list.")
             return
         if not operator:
             messagebox.showerror("Error", "Operator name is required.")
@@ -824,7 +880,7 @@ class ProvisioningApp(tk.Tk):
         self._start_btn.config(state="disabled")
         self._progress.start(10)
         self._log("─" * 50)
-        self._log(f"Starting provisioning in Room: {room_id_str}")
+        self._log(f"Starting provisioning in Room ID: {room_id}")
         self._log(f"OTA Server: {ota_server_endpoint}")
 
         import time
@@ -895,7 +951,7 @@ class ProvisioningApp(tk.Tk):
                 try:
                     device_resp = self._client.register_device(
                         mac_address=mac_addr,
-                        room_id=int(room_id_str),
+                        room_id=room_id,
                     )
                     device_db_id = device_resp.get("id") or device_resp.get("deviceId")
                     psk_key = device_resp.get("pskKey")
@@ -907,9 +963,9 @@ class ProvisioningApp(tk.Tk):
                         existing_device = self._client.get_device_by_mac(mac_addr)
                         if existing_device:
                             device_db_id = existing_device.get("id") or existing_device.get("deviceId")
-                            if existing_device.get("roomId") != int(room_id_str):
-                                self._client.update_device_room(device_db_id, int(room_id_str))
-                                self._log(f"  Room updated to {room_id_str}")
+                            if existing_device.get("roomId") != room_id:
+                                self._client.update_device_room(device_db_id, room_id)
+                                self._log(f"  Room updated to {room_id}")
                             psk_resp = self._client.get_device_psk(device_db_id)
                             psk_key = psk_resp.get("pskKey")
                             logs.append(f"Device already exists: ID={device_db_id}")
@@ -926,12 +982,12 @@ class ProvisioningApp(tk.Tk):
                 # Fetch room name for board name
                 board_name = ""
                 try:
-                    room_info = self._client.get_room(int(room_id_str))
+                    room_info = self._client.get_room(room_id)
                     board_name = room_info.get("name", "")
                     self._log(f"  Room name: {board_name}")
                 except Exception as e:
                     self._log(f"  ⚠ Could not fetch room name: {e}")
-                    board_name = f"Room-{room_id_str}"
+                    board_name = f"Room-{room_id}"
 
                 # Build configuration
                 self._log("→ Creating device configuration…")
@@ -1107,16 +1163,32 @@ class ProvisioningApp(tk.Tk):
         
         try:
             rooms = self._client.list_rooms()
+            self._room_id_by_label.clear()
+            self._room_name_by_id.clear()
+
             for row in self._rooms_tree.get_children():
                 self._rooms_tree.delete(row)
             
             for room in rooms:
+                room_id = room.get("id")
+                room_name = room.get("name", f"Room {room_id}")
+                if isinstance(room_id, int):
+                    self._room_name_by_id[room_id] = room_name
+                    label = f"{room_name} (ID: {room_id})"
+                    self._room_id_by_label[label] = room_id
                 status = "OCCUPIED" if room.get("currentOccupiedState") else "EMPTY"
                 self._rooms_tree.insert("", tk.END, values=(
-                    room.get("id"),
-                    room.get("name"),
+                    room_id,
+                    room_name,
                     status
                 ))
+
+            room_values = list(self._room_id_by_label.keys())
+            self._room_combo["values"] = room_values
+            if room_values:
+                current_label = self._room_var.get().strip()
+                if current_label not in self._room_id_by_label:
+                    self._room_combo.current(0)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load rooms: {e}")
 
@@ -1193,21 +1265,58 @@ class ProvisioningApp(tk.Tk):
     def _refresh_device_list(self) -> None:
         if self._client is None:
             return
-        
-        try:
-            devices = self._client.list_devices()
-            for row in self._dev_tree.get_children():
-                self._dev_tree.delete(row)
-            
-            for device in devices:
-                self._dev_tree.insert("", tk.END, values=(
-                    device.get("id"),
-                    device.get("macAddress"),
-                    device.get("roomId"),
-                    device.get("status", "UNKNOWN")
-                ))
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load devices: {e}")
+
+        def _load() -> None:
+            try:
+                devices = self._client.list_devices()
+                room_names = dict(self._room_name_by_id)
+                if not room_names:
+                    try:
+                        for room in self._client.list_rooms():
+                            rid = room.get("id")
+                            if isinstance(rid, int):
+                                room_names[rid] = room.get("name", f"Room {rid}")
+                    except Exception:
+                        pass
+
+                rows: list[tuple] = []
+                for device in devices:
+                    room_id = device.get("roomId")
+                    firmware = (
+                        device.get("firmwareVersion")
+                        or device.get("currentFirmwareVersion")
+                        or "Unknown"
+                    )
+                    last_seen = (
+                        device.get("lastSeen")
+                        or device.get("lastHeartbeat")
+                        or "-"
+                    )
+                    if isinstance(last_seen, str):
+                        last_seen = last_seen.replace("T", " ")[:19] if "T" in last_seen else last_seen[:19]
+
+                    rows.append((
+                        device.get("id"),
+                        device.get("macAddress"),
+                        room_id,
+                        room_names.get(room_id, "-"),
+                        firmware,
+                        device.get("status", "UNKNOWN"),
+                        last_seen,
+                    ))
+
+                def _render() -> None:
+                    for row in self._dev_tree.get_children():
+                        self._dev_tree.delete(row)
+                    for row in rows:
+                        self._dev_tree.insert("", tk.END, values=row)
+
+                self.after(0, _render)
+            except Exception as e:
+                err_msg = str(e)
+                self.after(0, lambda msg=err_msg: messagebox.showerror("Error", f"Failed to load devices: {msg}"))
+
+        threading.Thread(target=_load, daemon=True).start()
 
     def _delete_device(self) -> None:
         if self._client is None:
@@ -1315,6 +1424,24 @@ class ProvisioningApp(tk.Tk):
     # ------------------------------------------------------------------ #
     # Helpers                                                              #
     # ------------------------------------------------------------------ #
+
+    def _on_admin_content_configure(self, _event: tk.Event) -> None:
+        """Keep the scrollregion in sync with the dynamic admin content height."""
+        self._admin_canvas.configure(scrollregion=self._admin_canvas.bbox("all"))
+
+    def _on_admin_canvas_configure(self, event: tk.Event) -> None:
+        """Stretch the embedded admin frame to the visible canvas width."""
+        self._admin_canvas.itemconfigure(self._admin_canvas_window, width=event.width)
+
+    def _bind_admin_mousewheel(self, _event: tk.Event) -> None:
+        self.bind_all("<MouseWheel>", self._on_admin_mousewheel)
+
+    def _unbind_admin_mousewheel(self, _event: tk.Event) -> None:
+        self.unbind_all("<MouseWheel>")
+
+    def _on_admin_mousewheel(self, event: tk.Event) -> None:
+        delta = -1 if event.delta > 0 else 1
+        self._admin_canvas.yview_scroll(delta, "units")
 
     def _log(self, message: str) -> None:
         """Append *message* to the log area (thread-safe)."""
